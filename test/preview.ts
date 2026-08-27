@@ -10,8 +10,12 @@ import { join } from "node:path";
 import { shouldSync } from "../src/paths";
 import { migrateData } from "../src/settings";
 
-const VAULT = process.argv[2] ?? "C:/Users/benwe/Schule/School";
-const DATA = process.argv[3] ?? `${VAULT}/.obsidian/plugins/.vault-sync-backup/data.json`;
+const VAULT = process.argv[2] ?? process.env.VAULT;
+if (!VAULT) {
+	console.error("usage: npm run preview -- <vault path> [data.json path]");
+	process.exit(2);
+}
+const DATA = process.argv[3] ?? `${VAULT}/.obsidian/plugins/ben-vault-sync/data.json`;
 const CONFIG_DIR = ".obsidian";
 const PRUNED = new Set([".git", ".trash", "node_modules", ".obsidian-git-data"]);
 

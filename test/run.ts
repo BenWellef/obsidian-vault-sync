@@ -42,21 +42,6 @@ async function main(): Promise<void> {
 		"a50be72b20f0e3f078d252e8e56b11b4bec67509"
 	);
 
-	// A real 61 KB UTF-8 file, hashed by git as 28088118d50762be06182c8172155548d90e63f1.
-	try {
-		const real = readFileSync(
-			"C:/Users/benwe/Schule/School/.obsidian/plugins/.vault-sync-backup/data.json"
-		);
-		const buf = real.buffer.slice(real.byteOffset, real.byteOffset + real.byteLength);
-		check(
-			"gitBlobSha: real 61 KB file matches git hash-object",
-			await gitBlobSha(buf as ArrayBuffer),
-			"28088118d50762be06182c8172155548d90e63f1"
-		);
-	} catch (err) {
-		failures.push(`could not hash the real v1 data.json: ${String(err)}`);
-	}
-
 	// --- path normalization ---------------------------------------------------
 	check("normalize: backslashes", normalize("Informatik\\bluej\\x.md"), "Informatik/bluej/x.md");
 	check("normalize: leading slash", normalize("/a/b"), "a/b");
@@ -219,32 +204,62 @@ async function main(): Promise<void> {
 	check("decide: local deleted, remote edited", decide(undefined, R("b"), B("a")), "download");
 	check("decide: gone on both sides", decide(undefined, undefined, B("a")), "none");
 
-	// --- migration of the real v1 data.json ----------------------------------
-	const backup =
-		"C:/Users/benwe/Schule/School/.obsidian/plugins/.vault-sync-backup/data.json";
-	let raw: unknown = null;
-	try {
-		raw = JSON.parse(readFileSync(backup, "utf8"));
-	} catch (err) {
-		failures.push(`could not read the v1 backup at ${backup}: ${String(err)}`);
-	}
-	if (raw) {
-		const migrated = migrateData(raw);
-		const original = raw as { settings: Record<string, unknown>; syncState: { files: Record<string, unknown> } };
-		check("migrate: owner", migrated.settings.owner, "BenWellef");
-		check("migrate: repo", migrated.settings.repo, "School-Obsidian-Vault");
-		check("migrate: branch", migrated.settings.branch, "main");
-		check("migrate: strategy", migrated.settings.conflictStrategy, "newer");
-		check("migrate: token preserved", migrated.settings.token === original.settings.token, true);
-		check("migrate: ignorePaths preserved", migrated.settings.ignorePaths.length, 5);
-		check("migrate: syncObsidianConfig", migrated.settings.syncObsidianConfig, true);
-		check("migrate: interval default added", migrated.settings.autoSyncIntervalMinutes, 5);
+	// --- migration of the v1 storage shape -----------------------------------
+	// Inline fixture mirroring what v1 wrote, so the suite runs anywhere. The
+	// "bad" entry must be dropped: a malformed sha would corrupt the base state.
+	const v1 = {
+		settings: {
+			token: "github_pat_EXAMPLE",
+			owner: "octocat",
+			repo: "my-vault",
+			branch: "main",
+			ignorePaths: ["Subject/folder", "Other\\folder"],
+			conflictStrategy: "newer",
+			syncBinary: true,
+			syncVideos: false,
+			syncAudio: false,
+			autoSyncOnLoad: true,
+			autoSyncInterval: true,
+			syncObsidianConfig: true,
+		},
+		syncState: {
+			files: {
+				"Mathe/Analysis.md": { sha: "aaa", mtime: 111 },
+				"Sport/plan.pdf": { sha: "bbb", mtime: 222 },
+				"broken.md": { sha: 5, mtime: 333 },
+			},
+			lastSync: 1787836654593,
+		},
+	};
+	const migrated = migrateData(v1);
+	check("migrate: owner", migrated.settings.owner, "octocat");
+	check("migrate: repo", migrated.settings.repo, "my-vault");
+	check("migrate: branch", migrated.settings.branch, "main");
+	check("migrate: strategy", migrated.settings.conflictStrategy, "newer");
+	check("migrate: token preserved", migrated.settings.token, "github_pat_EXAMPLE");
+	check("migrate: ignorePaths preserved", migrated.settings.ignorePaths.length, 2);
+	check("migrate: syncObsidianConfig preserved", migrated.settings.syncObsidianConfig, true);
+	check("migrate: interval default added", migrated.settings.autoSyncIntervalMinutes, 5);
+	check("migrate: malformed entry dropped", Object.keys(migrated.syncState.files).length, 2);
+	check("migrate: lastSync preserved", migrated.syncState.lastSync, 1787836654593);
+	check(
+		"migrate: ignorePaths still match with either separator",
+		[isIgnored("Subject/folder/x.md", migrated.settings.ignorePaths),
+		 isIgnored("Other/folder/y.md", migrated.settings.ignorePaths)],
+		[true, true]
+	);
+
+	// Optional: check a real v1 data.json when one is pointed at.
+	const realData = process.env.V1_DATA;
+	if (realData) {
+		const raw = JSON.parse(readFileSync(realData, "utf8")) as {
+			syncState: { files: Record<string, unknown> };
+		};
 		check(
-			"migrate: all tracked files preserved",
-			Object.keys(migrated.syncState.files).length,
-			Object.keys(original.syncState.files).length
+			"migrate: real data.json keeps every tracked file",
+			Object.keys(migrateData(raw).syncState.files).length,
+			Object.keys(raw.syncState.files).length
 		);
-		check("migrate: lastSync preserved", migrated.syncState.lastSync > 0, true);
 	}
 
 	// --- migration robustness ------------------------------------------------

@@ -107,21 +107,22 @@ path, which is exactly why the lost source could not be recovered from it.
 npm install
 npm run dev      # watch build
 npm run build    # typecheck, then production bundle
-npm test         # 72 assertions, no network
-npm run preview  # dry run: what would the next sync upload?
-npm run deploy   # build, then copy into the vault
+npm test         # 72 assertions, no network, no local paths
+npm run preview -- /path/to/vault    # dry run: what would the next sync upload?
+VAULT=/path/to/vault npm run deploy  # build, then copy into the vault
 ```
 
 `npm test` covers the decision table, the path rules, git blob hashing against
-values `git hash-object` produces, and migration of the real v1 `data.json`.
-`npm run preview` walks the actual vault with the real rules and reports what the
-next sync would send, without touching the network.
-
-Set `VAULT` to deploy elsewhere:
+values `git hash-object` produces, and migration of the v1 storage shape. It
+needs no vault and no network. Point `V1_DATA` at a real v1 `data.json` for one
+extra assertion that migration preserves every tracked file:
 
 ```bash
-VAULT=/path/to/other/vault npm run deploy
+V1_DATA=/path/to/data.json npm test
 ```
+
+`npm run preview` walks a real vault with the real rules and reports what the
+next sync would send, without touching the network.
 
 ## Files
 

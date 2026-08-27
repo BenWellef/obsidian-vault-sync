@@ -1,0 +1,14 @@
+.vault-sync-status {
+	cursor: pointer;
+}
+
+.vault-sync-status:hover {
+	color: var(--text-accent);
+}
+
+.vault-sync-ignore-input {
+	width: 100%;
+	min-width: 20rem;
+	font-family: var(--font-monospace);
+	resize: vertical;
+}

@@ -57,6 +57,11 @@ export function basenameOf(path: string): string {
 	return slash === -1 ? path : path.slice(slash + 1);
 }
 
+/** True for a preserved conflict copy such as `Note.conflict-remote.md`. */
+export function isConflictSidecar(path: string): boolean {
+	return /\.conflict-(remote|local)(\.[^./]+)?$/.test(path);
+}
+
 export function categoryOf(path: string): Category {
 	const ext = extensionOf(path);
 	if (VIDEO_EXT.has(ext)) return "video";
@@ -94,6 +99,10 @@ export function shouldSync(
 ): boolean {
 	if (!path) return false;
 	if (NEVER_SYNC_BASENAMES.has(basenameOf(path))) return false;
+	// A preserved conflict copy stays on the device that produced it. Syncing it
+	// would let it conflict in turn and spawn a sidecar of a sidecar, which is
+	// how "Hausaufgaben.conflict-remote.conflict-remote.md" came about.
+	if (isConflictSidecar(path)) return false;
 
 	// Local-only bookkeeping.
 	if (path === MARKER_FILE) return false;
@@ -161,6 +170,3 @@ export function conflictSidecar(path: string, side: "remote" | "local"): string 
 	return `${path}.conflict-${side}`;
 }
 
-export function isConflictSidecar(path: string): boolean {
-	return /\.conflict-(remote|local)(\.[^./]+)?$/.test(path);
-}

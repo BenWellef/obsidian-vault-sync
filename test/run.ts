@@ -1,5 +1,11 @@
 import { readFileSync } from "node:fs";
-import { conflictSidecar, isIgnored, normalize, shouldSync } from "../src/paths";
+import {
+	conflictSidecar,
+	isConflictSidecar,
+	isIgnored,
+	normalize,
+	shouldSync,
+} from "../src/paths";
 import { gitBlobSha } from "../src/sha";
 import { DEFAULT_SETTINGS, migrateData } from "../src/settings";
 import { decide } from "../src/sync";
@@ -159,6 +165,33 @@ async function main(): Promise<void> {
 	check("shouldSync: git excluded", shouldSync(".git/config", withConfig, ".obsidian"), false);
 	check("shouldSync: trash excluded", shouldSync(".trash/old.md", withConfig, ".obsidian"), false);
 	check("shouldSync: note included", shouldSync("Mathe/Analysis.md", withConfig, ".obsidian"), true);
+
+	// --- sidecars never sync, so they can never cascade ----------------------
+	check(
+		"shouldSync: remote sidecar excluded",
+		shouldSync("Hausaufgaben.conflict-remote.md", withConfig, ".obsidian"),
+		false
+	);
+	check(
+		"shouldSync: local sidecar excluded",
+		shouldSync("Spanisch/SNN SNG.conflict-local.pdf", withConfig, ".obsidian"),
+		false
+	);
+	check(
+		"shouldSync: cascaded sidecar excluded",
+		shouldSync("Hausaufgaben.conflict-remote.conflict-remote.md", withConfig, ".obsidian"),
+		false
+	);
+	check("isConflictSidecar: plain note", isConflictSidecar("Hausaufgaben.md"), false);
+	check("isConflictSidecar: remote copy", isConflictSidecar("Hausaufgaben.conflict-remote.md"), true);
+	check("isConflictSidecar: no extension", isConflictSidecar("README.conflict-local"), true);
+	check("isConflictSidecar: similar name", isConflictSidecar("conflict-remote-notes.md"), false);
+	// A sidecar the engine produces must itself be excluded: that closes the loop.
+	check(
+		"a produced sidecar is never re-synced",
+		shouldSync(conflictSidecar("Mathe/Analysis.md", "remote"), withConfig, ".obsidian"),
+		false
+	);
 
 	// --- media gates ---------------------------------------------------------
 	check("shouldSync: pdf follows syncBinary", shouldSync("a.pdf", settings({ syncBinary: true }), ".obsidian"), true);

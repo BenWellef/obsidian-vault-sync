@@ -1,6 +1,6 @@
 {
   "name": "ben-vault-sync",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Syncs an Obsidian vault with a GitHub repository.",
   "main": "main.js",
   "private": true,

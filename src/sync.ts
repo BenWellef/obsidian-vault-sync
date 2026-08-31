@@ -16,6 +16,14 @@ const PRUNED_FOLDERS = new Set([".git", ".trash", "node_modules", ".obsidian-git
 
 const DOWNLOAD_CONCURRENCY = 4;
 
+/**
+ * A sync stops rather than delete more than this many files, when they also make
+ * up more than this share of everything tracked. Bulk deletion is always the
+ * shape a corrupted listing or a lost sync state takes, and it is never urgent.
+ */
+const MAX_DELETIONS = 20;
+const MAX_DELETION_RATIO = 0.25;
+
 interface LocalEntry {
 	sha: string;
 	mtime: number;
@@ -23,7 +31,7 @@ interface LocalEntry {
 }
 
 type Action =
-	| { kind: "upload"; path: string; remoteSha?: string }
+	| { kind: "upload"; path: string; remoteSha?: string; remoteBytes?: number }
 	| { kind: "download"; path: string; remoteSha: string }
 	| { kind: "deleteLocal"; path: string }
 	| { kind: "deleteRemote"; path: string; remoteSha: string }
@@ -113,7 +121,9 @@ export class SyncEngine {
 		if (!stat || stat.type !== "file") return undefined;
 
 		const known = this.data.syncState.files[path];
-		if (known && known.mtime === stat.mtime) {
+		// A zero or absent mtime cannot identify a version, so the shortcut must
+		// not trust one. Some mobile filesystems report exactly that.
+		if (known && stat.mtime > 0 && known.mtime === stat.mtime) {
 			return { sha: known.sha, mtime: stat.mtime, size: stat.size };
 		}
 		const content = await this.adapter.readBinary(path);
@@ -133,10 +143,33 @@ export class SyncEngine {
 		await this.ensureParent(path);
 		await this.adapter.writeBinary(path, content);
 		const stat = await this.adapter.stat(path);
-		return {
-			sha: await gitBlobSha(content),
-			mtime: stat?.mtime ?? Date.now(),
-		};
+		// Confirm the write landed whole. A short write would otherwise be recorded
+		// as a good version, and the truncation would spread on the next sync.
+		if (!stat || stat.size !== content.byteLength) {
+			throw new Error(
+				`Wrote ${content.byteLength} bytes to ${path} but the file reports ` +
+					`${stat ? stat.size : "nothing"}. Sync state was not advanced.`
+			);
+		}
+		return { sha: await gitBlobSha(content), mtime: stat.mtime };
+	}
+
+	/**
+	 * Refuse to replace a file that has content with an empty one.
+	 *
+	 * This is the guard that was missing when a broken download path wrote every
+	 * file as zero bytes and the following sync pushed those empties over the good
+	 * copies. Emptying a file in place is the only legitimate case this blocks,
+	 * and giving that up is worth never repeating the other.
+	 */
+	private async guardEmptyOverwrite(path: string, incomingBytes: number): Promise<void> {
+		if (incomingBytes > 0) return;
+		const stat = await this.adapter.stat(path);
+		if (stat && stat.type === "file" && stat.size > 0) {
+			throw new Error(
+				`Refused to overwrite ${path} (${stat.size} bytes) with an empty file.`
+			);
+		}
 	}
 
 	/** Delete into the vault local trash so it stays recoverable. */
@@ -161,8 +194,38 @@ export class SyncEngine {
 		result.truncated = truncated;
 
 		const remote = new Map<string, RemoteEntry>();
+		const seenLowercase = new Map<string, string>();
 		for (const [path, entry] of remoteAll) {
-			if (shouldSync(path, this.settings, configDir)) remote.set(path, entry);
+			// A path in the repository that is not already composed cannot be matched
+			// against a local one without guessing which spelling to write back, so
+			// it is reported rather than acted on. This only happens if something
+			// uploaded a decomposed name before that was normalized.
+			if (normalize(path) !== path) {
+				result.errors.push({
+					path,
+					message:
+						"Repository path is not in composed Unicode form. Rename it in the " +
+						"repository, then sync again. Skipped to avoid creating a duplicate.",
+				});
+				continue;
+			}
+			if (!shouldSync(path, this.settings, configDir)) continue;
+
+			// iOS, iPadOS and Windows filesystems are case-insensitive: two paths
+			// differing only in case are one file there, and syncing both would make
+			// them overwrite each other on every run.
+			const lower = path.toLowerCase();
+			const clash = seenLowercase.get(lower);
+			if (clash !== undefined) {
+				result.errors.push({
+					path,
+					message: `Differs only in capitalisation from "${clash}". Both skipped: they would be the same file on iOS and Windows.`,
+				});
+				remote.delete(clash);
+				continue;
+			}
+			seenLowercase.set(lower, path);
+			remote.set(path, entry);
 		}
 		result.scannedRemote = remote.size;
 
@@ -201,7 +264,7 @@ export class SyncEngine {
 
 			if (mode === "push") {
 				if (l && (!r || l.sha !== r.sha)) {
-					actions.push({ kind: "upload", path, remoteSha: r?.sha });
+					actions.push({ kind: "upload", path, remoteSha: r?.sha, remoteBytes: r?.size });
 				}
 				continue;
 			}
@@ -215,7 +278,7 @@ export class SyncEngine {
 			const kind = decide(l, r, base);
 			switch (kind) {
 				case "upload":
-					actions.push({ kind, path, remoteSha: r?.sha });
+					actions.push({ kind, path, remoteSha: r?.sha, remoteBytes: r?.size });
 					break;
 				case "download":
 					if (r) actions.push({ kind, path, remoteSha: r.sha });
@@ -234,6 +297,26 @@ export class SyncEngine {
 					if (l) state.files[path] = { sha: l.sha, mtime: l.mtime };
 					break;
 			}
+		}
+
+		// Two shapes of disaster that a single bad listing would otherwise carry out
+		// as if it were ordinary work.
+		const tracked = Object.keys(state.files).length;
+		if (remote.size === 0 && tracked > 0) {
+			throw new Error(
+				`The repository listed no syncable files while ${tracked} are tracked. ` +
+					`Refusing to act: that would empty one side completely.`
+			);
+		}
+		const deletions = actions.filter(
+			(a) => a.kind === "deleteLocal" || a.kind === "deleteRemote"
+		).length;
+		if (deletions > MAX_DELETIONS && deletions > tracked * MAX_DELETION_RATIO) {
+			throw new Error(
+				`This sync would delete ${deletions} of ${tracked} tracked files. ` +
+					`Stopped without changing anything. Use force upload or force ` +
+					`download if that many deletions are genuinely intended.`
+			);
 		}
 
 		if (actions.length === 0) {
@@ -260,6 +343,7 @@ export class SyncEngine {
 			for (const action of queue) {
 				try {
 					const content = await this.gh.getBlob(action.remoteSha);
+					await this.guardEmptyOverwrite(action.path, content.byteLength);
 					state.files[action.path] = await this.writeLocal(action.path, content);
 					result.downloaded.push(action.path);
 				} catch (err) {
@@ -312,6 +396,12 @@ export class SyncEngine {
 					const entry = local.get(action.path);
 					if (!entry) continue;
 					const content = await this.adapter.readBinary(action.path);
+					if (content.byteLength === 0 && (action.remoteBytes ?? 0) > 0) {
+						throw new Error(
+							`Refused to replace ${action.path} in the repository ` +
+								`(${action.remoteBytes} bytes) with an empty local file.`
+						);
+					}
 					const newSha = await this.gh.putFile(
 						action.path,
 						content,
@@ -361,6 +451,26 @@ export class SyncEngine {
 			// The base is deliberately not advanced, so this keeps being reported
 			// until the two sides actually agree again.
 			await this.writeLocal(conflictSidecar(path, "remote"), remoteData);
+			return;
+		}
+
+		// An empty side never wins against one that has content, whatever the
+		// configured strategy says. A timestamp is not evidence when one version is
+		// simply gone.
+		if (localData.byteLength === 0 && remoteData.byteLength > 0) {
+			state.files[path] = await this.writeLocal(path, remoteData);
+			result.downloaded.push(path);
+			return;
+		}
+		if (remoteData.byteLength === 0 && localData.byteLength > 0) {
+			const newSha = await this.gh.putFile(
+				path,
+				localData,
+				remoteSha,
+				`vault-sync: update ${path}`
+			);
+			state.files[path] = { sha: newSha, mtime: entry.mtime };
+			result.uploaded.push(path);
 			return;
 		}
 

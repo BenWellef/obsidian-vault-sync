@@ -26,12 +26,21 @@ function encodePath(path: string): string {
 	return path.split("/").map(encodeURIComponent).join("/");
 }
 
+/**
+ * Chunked so no single call gets a huge argument list: JavaScriptCore, which
+ * runs Obsidian on iOS, tolerates far shorter ones than V8 does. apply() takes
+ * the typed array directly, so no intermediate array is built either.
+ */
+const B64_CHUNK = 8192;
+
 export function toBase64(buf: ArrayBuffer): string {
 	const bytes = new Uint8Array(buf);
-	const CHUNK = 0x8000;
 	let out = "";
-	for (let i = 0; i < bytes.length; i += CHUNK) {
-		out += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+	for (let i = 0; i < bytes.length; i += B64_CHUNK) {
+		out += String.fromCharCode.apply(
+			null,
+			bytes.subarray(i, i + B64_CHUNK) as unknown as number[]
+		);
 	}
 	return btoa(out);
 }
@@ -213,6 +222,18 @@ export class GitHubClient {
 		const newSha = res.json?.content?.sha;
 		if (typeof newSha !== "string") {
 			throw new GitHubError("Upload response contained no blob SHA", res.status, false);
+		}
+		// What GitHub stored must hash to the same blob as what we sent. A mismatch
+		// means the body was damaged on the way out, and the caller must not record
+		// it as successfully synced.
+		const expected = await gitBlobSha(content);
+		if (newSha !== expected) {
+			throw new GitHubError(
+				`Upload of ${path} stored ${newSha.slice(0, 8)} but the local file ` +
+					`hashes to ${expected.slice(0, 8)}. Treated as a failed upload.`,
+				res.status,
+				false
+			);
 		}
 		return newSha;
 	}

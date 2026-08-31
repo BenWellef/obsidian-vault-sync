@@ -34,11 +34,23 @@ const CONFIG_EXCLUDES = new Set([
 export type Category = "text" | "video" | "audio" | "binary";
 
 /**
- * Normalize to vault-relative POSIX form. v1 stored ignorePaths with a mix of
- * forward and backward slashes, so both have to be accepted on input.
+ * Normalize to vault-relative POSIX form.
+ *
+ * v1 stored ignorePaths with a mix of forward and backward slashes, so both are
+ * accepted on input.
+ *
+ * The Unicode normalization matters more than it looks. Apple filesystems hand
+ * back decomposed names, so an umlaut arrives as a letter plus a combining mark,
+ * while the repository holds the composed form written by Windows. Compared as
+ * raw strings those are two different paths: every accented file would look
+ * absent on one side and new on the other, so a sync from a phone or tablet
+ * would delete it from the repository and re-upload it under the decomposed
+ * name. Composing both sides collapses them back into one path, and lookups on
+ * Apple filesystems are normalization-insensitive, so the composed form still
+ * opens the right file.
  */
 export function normalize(p: string): string {
-	let out = p.replace(/\\/g, "/").trim();
+	let out = p.replace(/\\/g, "/").trim().normalize("NFC");
 	while (out.startsWith("./")) out = out.slice(2);
 	while (out.startsWith("/")) out = out.slice(1);
 	while (out.endsWith("/")) out = out.slice(0, -1);

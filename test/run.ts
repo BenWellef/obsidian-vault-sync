@@ -30,6 +30,9 @@ function settings(over: Partial<VaultSyncSettings> = {}): VaultSyncSettings {
 }
 
 async function main(): Promise<void> {
+	const withConfig = settings({ syncObsidianConfig: true });
+	const withoutConfig = settings({ syncObsidianConfig: false });
+
 	// --- git blob hashing, against values git itself produces -----------------
 	const enc = (s: string) => new TextEncoder().encode(s).buffer as ArrayBuffer;
 	check(
@@ -85,6 +88,35 @@ async function main(): Promise<void> {
 	check("normalize: trailing slash", normalize("a/b/"), "a/b");
 	check("normalize: dot prefix", normalize("./a"), "a");
 
+	// --- Unicode normalization: the latent iOS trap -------------------------
+	// Apple filesystems return decomposed names. Built from code points here so
+	// this file stays pure ASCII and the two forms cannot be confused by eye.
+	const COMBINING_DIAERESIS = String.fromCharCode(0x308);
+	const nfd = "Deutsch/Bahnwa" + COMBINING_DIAERESIS + "rter Thiel.pdf";
+	const nfc = "Deutsch/Bahnw" + String.fromCharCode(0xe4) + "rter Thiel.pdf";
+	check("NFD and NFC inputs differ as raw strings", nfd === nfc, false);
+	check("normalize: composes a decomposed path", normalize(nfd), nfc);
+	check("normalize: leaves a composed path alone", normalize(nfc), nfc);
+	check("normalize: is idempotent", normalize(normalize(nfd)), normalize(nfd));
+	// Without this, a decomposed local path would look absent on the remote side
+	// and the file would be deleted from the repository and re-uploaded.
+	check(
+		"normalize: both spellings collapse to one key",
+		normalize(nfd) === normalize(nfc),
+		true
+	);
+	// The same has to hold through the ignore matching, which normalizes entries.
+	check(
+		"isIgnored: composed entry matches a decomposed path",
+		isIgnored(normalize("Deutsch/Bahnwa" + COMBINING_DIAERESIS + "rter Thiel.pdf"), [nfc]),
+		true
+	);
+	check(
+		"shouldSync: decomposed path still classified normally",
+		shouldSync(normalize(nfd), withConfig, ".obsidian"),
+		true
+	);
+
 	// --- ignore matching, using the exact v1 entries with mixed separators ----
 	const v1Ignore = [
 		"Seminarfach/greenfoot",
@@ -99,8 +131,6 @@ async function main(): Promise<void> {
 	check("isIgnored: unrelated", isIgnored("Mathe/Analysis.md", v1Ignore), false);
 
 	// --- shouldSync: the v1 bug is the config folder being unreachable --------
-	const withConfig = settings({ syncObsidianConfig: true });
-	const withoutConfig = settings({ syncObsidianConfig: false });
 	check(
 		"shouldSync: config included when enabled",
 		shouldSync(".obsidian/community-plugins.json", withConfig, ".obsidian"),

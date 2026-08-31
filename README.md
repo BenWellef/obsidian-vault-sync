@@ -101,13 +101,79 @@ In v1 this switch did nothing at all: the traversal skipped every dot folder, so
 `.obsidian` was never reached. The repository has zero commits touching that
 path, which is exactly why the lost source could not be recovered from it.
 
+## Safeguards
+
+Every one of these exists because its absence caused real damage, or because the
+same class of mistake nearly did.
+
+**Nothing empty overwrites something that has content.** In either direction,
+and regardless of the conflict strategy. A download that arrives empty over a
+file with content is refused; so is an upload of an empty local file over a
+non-empty remote one; and in a conflict the side with content wins outright,
+because a timestamp proves nothing when one version is simply gone. This is the
+guard that was missing when a broken download path wrote every file as zero
+bytes and the next sync pushed those empties over the good copies.
+
+**Every transfer is hashed.** A download is verified against the blob SHA it was
+requested by, before anything is written. An upload is verified against the SHA
+GitHub reports for what it stored. A local write is checked for the byte count
+that was handed to it. Any mismatch throws and the sync state is not advanced, so
+a damaged transfer is reported instead of being recorded as success.
+
+**Bulk deletion stops the sync.** More than 20 deletions that also make up over a
+quarter of everything tracked aborts the run without touching anything. If the
+repository lists no syncable files while files are tracked, the run aborts too.
+Both are what a corrupted listing or a lost sync state looks like, and neither is
+ever urgent.
+
+**Incomplete information is never read as deletion.** If the repository tree
+comes back truncated, a missing remote path could just be missing from the
+listing, so deletions are skipped for that run and the notice says so.
+
+**An mtime of zero is not trusted.** The mtime shortcut skips re-hashing an
+unchanged file; a filesystem reporting no mtime would make every file look
+unchanged, so the shortcut is skipped in that case.
+
+**Deletions go to the vault trash**, not to unlink, so they stay recoverable.
+
+## iOS and iPadOS
+
+Mobile is not just a smaller desktop here, and three of these bit in practice:
+
+**Response bodies are decoded as text.** `requestUrl` does this on some
+platforms, which empties any binary body. Blobs therefore travel as base64
+inside JSON, which is plain ASCII and survives it. The raw fallback for blobs
+GitHub declines to inline is still guarded by the SHA check.
+
+**Decomposed filenames.** Apple filesystems return an umlaut as a letter plus a
+combining mark, while a repository written from Windows holds the composed form.
+As raw strings those are different paths, so every accented file would look
+absent on one side and new on the other: a mobile sync would delete it from the
+repository and re-upload it under the decomposed name. All paths are composed to
+NFC before comparison. Lookups on Apple filesystems are normalization-
+insensitive, so the composed form still opens the right file. A repository path
+that is not already composed is reported and skipped rather than guessed at.
+
+**Short argument lists.** JavaScriptCore, which runs Obsidian on iOS, tolerates
+far shorter argument lists than V8. Base64 encoding works in 8 KB chunks and
+passes the typed array to `apply` directly, so no call gets a huge argument list
+and no intermediate array is built.
+
+**Case-insensitive filesystems.** Two repository paths differing only in
+capitalisation are one file on iOS and Windows and would overwrite each other on
+every run. Both are reported and skipped.
+
+Periodic sync is unreliable on iOS regardless: the app is suspended in the
+background, so the interval only fires while Obsidian is in the foreground. Sync
+on startup works normally.
+
 ## Development
 
 ```bash
 npm install
 npm run dev      # watch build
 npm run build    # typecheck, then production bundle
-npm test         # 72 assertions, no network, no local paths
+npm test         # 92 assertions, no network, no local paths
 npm run preview -- /path/to/vault    # dry run: what would the next sync upload?
 VAULT=/path/to/vault npm run deploy  # build, then copy into the vault
 ```

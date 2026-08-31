@@ -1,4 +1,5 @@
 import { requestUrl, RequestUrlResponse } from "obsidian";
+import { gitBlobSha } from "./sha";
 import { VaultSyncSettings } from "./types";
 
 const API = "https://api.github.com";
@@ -142,12 +143,43 @@ export class GitHubClient {
 		return { files, truncated: res.json?.truncated === true };
 	}
 
-	/** Raw blob bytes, safe for binary content. */
+	/**
+	 * Blob content for a given SHA.
+	 *
+	 * Transported as base64 inside JSON rather than as a raw body: requestUrl
+	 * decodes responses as text on some platforms, which silently emptied or
+	 * mangled every binary download. Base64 is plain ASCII and survives that.
+	 *
+	 * The result is verified against the requested SHA, so a mangled transfer
+	 * fails loudly instead of writing a truncated file over a good one.
+	 */
 	async getBlob(sha: string): Promise<ArrayBuffer> {
-		const res = await this.request("GET", `${this.repoBase}/git/blobs/${sha}`, {
-			accept: "application/vnd.github.raw",
-		});
-		return res.arrayBuffer;
+		const res = await this.request("GET", `${this.repoBase}/git/blobs/${sha}`);
+		const encoding = res.json?.encoding;
+		const content = res.json?.content;
+
+		let data: ArrayBuffer;
+		if (encoding === "base64" && typeof content === "string") {
+			data = fromBase64(content);
+		} else {
+			// Blobs the JSON endpoint declines to inline come back as encoding
+			// "none"; those have to be fetched raw.
+			const raw = await this.request("GET", `${this.repoBase}/git/blobs/${sha}`, {
+				accept: "application/vnd.github.raw",
+			});
+			data = raw.arrayBuffer;
+		}
+
+		const actual = await gitBlobSha(data);
+		if (actual !== sha) {
+			throw new GitHubError(
+				`Blob ${sha.slice(0, 8)} arrived damaged: got ${actual.slice(0, 8)} ` +
+					`from ${data.byteLength} bytes. Nothing was written.`,
+				0,
+				false
+			);
+		}
+		return data;
 	}
 
 	/**

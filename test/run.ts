@@ -6,6 +6,7 @@ import {
 	normalize,
 	shouldSync,
 } from "../src/paths";
+import { fromBase64, toBase64 } from "../src/github";
 import { gitBlobSha } from "../src/sha";
 import { DEFAULT_SETTINGS, migrateData } from "../src/settings";
 import { decide } from "../src/sync";
@@ -46,6 +47,36 @@ async function main(): Promise<void> {
 		"gitBlobSha: 1000 x a",
 		await gitBlobSha(enc("a".repeat(1000))),
 		"a50be72b20f0e3f078d252e8e56b11b4bec67509"
+	);
+
+	// --- base64 codec: the transport every download now depends on ----------
+	// Raw binary bodies were emptied by requestUrl on some platforms, so blobs
+	// travel as base64. Every byte value has to survive the round trip.
+	const allBytes = new Uint8Array(256);
+	for (let i = 0; i < 256; i++) allBytes[i] = i;
+	const roundTripped = new Uint8Array(fromBase64(toBase64(allBytes.buffer as ArrayBuffer)));
+	check("base64: length survives", roundTripped.length, 256);
+	check(
+		"base64: every byte value survives",
+		Array.from(roundTripped).every((b, i) => b === i),
+		true
+	);
+	check("base64: empty input", new Uint8Array(fromBase64(toBase64(new ArrayBuffer(0)))).length, 0);
+	// GitHub wraps the base64 it returns at 60 columns.
+	const NL = String.fromCharCode(10);
+	const wrapped = toBase64(allBytes.buffer as ArrayBuffer)
+		.replace(/(.{60})/g, "$1" + NL);
+	check(
+		"base64: tolerates the line wrapping GitHub adds",
+		new Uint8Array(fromBase64(wrapped)).every((b, i) => b === i),
+		true
+	);
+	// A base64 round trip must not change the blob identity.
+	const payload = new Uint8Array([0, 255, 10, 13, 0x80, 0x1a]).buffer as ArrayBuffer;
+	check(
+		"base64: blob sha unchanged by the round trip",
+		await gitBlobSha(fromBase64(toBase64(payload))),
+		await gitBlobSha(payload)
 	);
 
 	// --- path normalization ---------------------------------------------------

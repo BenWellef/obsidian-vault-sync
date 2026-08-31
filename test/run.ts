@@ -282,6 +282,8 @@ async function main(): Promise<void> {
 	// --- the three-way decision table ---------------------------------------
 	const L = (sha: string) => ({ sha, mtime: 1000, size: 1 });
 	const R = (sha: string) => ({ sha, size: 1 });
+	const EMPTY_L = (sha: string) => ({ sha, mtime: 1000, size: 0 });
+	const EMPTY_R = (sha: string) => ({ sha, size: 0 });
 	const B = (sha: string) => ({ sha, mtime: 1000 });
 
 	check("decide: identical", decide(L("a"), R("a"), B("a")), "none");
@@ -296,6 +298,33 @@ async function main(): Promise<void> {
 	check("decide: new remote file", decide(undefined, R("a"), undefined), "download");
 	check("decide: local deleted, remote untouched", decide(undefined, R("a"), B("a")), "deleteRemote");
 	check("decide: local deleted, remote edited", decide(undefined, R("b"), B("a")), "download");
+	// An empty side must never win, and must never deadlock either: the guard
+	// refuses to write emptiness, so the decision has to point the other way.
+	check(
+		"decide: empty remote, local has content, base is local -> upload",
+		decide(L("a"), EMPTY_R("empty"), B("a")),
+		"upload"
+	);
+	check(
+		"decide: empty remote, local has content, no base -> upload",
+		decide(L("a"), EMPTY_R("empty"), undefined),
+		"upload"
+	);
+	check(
+		"decide: empty remote, local has content, unrelated base -> upload",
+		decide(L("b"), EMPTY_R("empty"), B("a")),
+		"upload"
+	);
+	check(
+		"decide: both empty stays quiet",
+		decide(EMPTY_L("empty"), EMPTY_R("empty"), B("empty")),
+		"none"
+	);
+	check(
+		"decide: empty local, remote has content, base is local -> download",
+		decide(EMPTY_L("empty"), R("a"), B("empty")),
+		"download"
+	);
 	check("decide: gone on both sides", decide(undefined, undefined, B("a")), "none");
 
 	// --- migration of the v1 storage shape -----------------------------------

@@ -1,7 +1,7 @@
 {
 	"id": "ben-vault-sync",
 	"name": "Ben VaultSync",
-	"version": "2.0.3",
+	"version": "2.0.4",
 	"minAppVersion": "1.7.7",
 	"description": "Syncs the vault with a GitHub repository.",
 	"author": "Ben Wellendorf",

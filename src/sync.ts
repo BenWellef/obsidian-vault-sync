@@ -54,6 +54,12 @@ export function decide(
 ): Action["kind"] | "none" {
 	if (local && remote) {
 		if (local.sha === remote.sha) return "none";
+		// An empty remote version is never a legitimate newer state for a file that
+		// still has content here. Without this the base could point at the local
+		// version, the decision would be "download", and the empty-overwrite guard
+		// would refuse it on every run: a guard with no way out is a deadlock.
+		// Uploading resolves it in the direction that keeps the content.
+		if (remote.size === 0 && local.size > 0) return "upload";
 		if (!base) return "conflict";
 		if (local.sha === base.sha) return "download";
 		if (remote.sha === base.sha) return "upload";

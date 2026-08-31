@@ -173,7 +173,7 @@ on startup works normally.
 npm install
 npm run dev      # watch build
 npm run build    # typecheck, then production bundle
-npm test         # 92 assertions, no network, no local paths
+npm test         # 97 assertions, no network, no local paths
 npm run preview -- /path/to/vault    # dry run: what would the next sync upload?
 VAULT=/path/to/vault npm run deploy  # build, then copy into the vault
 ```
